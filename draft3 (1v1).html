@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <title>LINKER ARENA - RANDOM BATTLE</title>
+    <script src="https://www.gstatic.com/firebasejs/9.1.3/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.1.3/firebase-database-compat.js"></script>
+    <style>
+        :root { --primary: #6c5ce7; --accent: #f9d854; --bg: #12151d; --red: #ff7675; --blue: #74b9ff; }
+        body { font-family: 'Montserrat', sans-serif; background: var(--bg); color: white; margin: 0; overflow-x: hidden; }
+        .hidden { display: none !important; }
+        
+        /* DASHBOARD GIÁO VIÊN */
+        .dashboard-container { display: grid; grid-template-columns: 1fr 350px; gap: 20px; padding: 20px; height: 95vh; }
+        .matches-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 15px; overflow-y: auto; padding-right: 10px; }
+        .match-card { background: #1e272e; padding: 15px; border-radius: 12px; border: 1px solid #3d3d3d; position: relative; }
+        
+        /* THANH ĐẨY (PROGRESS) */
+        .bar-bg { width: 100%; height: 25px; background: #333; border-radius: 20px; position: relative; margin: 15px 0; overflow: hidden; border: 2px solid #555; }
+        .bar-momentum { height: 100%; position: absolute; width: 50%; transition: left 0.4s cubic-bezier(0.18, 0.89, 0.32, 1.28); background: linear-gradient(90deg, var(--red), var(--blue)); }
+        .center-line { position: absolute; left: 50%; top: 0; width: 2px; height: 100%; background: white; z-index: 2; }
+
+        /* BẢNG XẾP HẠNG */
+        .leaderboard { background: #2d3436; padding: 20px; border-radius: 15px; border-top: 5px solid var(--accent); }
+        .rank-item { display: flex; justify-content: space-between; padding: 12px; border-bottom: 1px solid #444; }
+
+        /* PLAYER UI */
+        .player-wrap { max-width: 450px; margin: 40px auto; padding: 20px; text-align: center; }
+        .q-card { background: white; color: #333; padding: 30px; border-radius: 20px; font-size: 1.4rem; margin-bottom: 20px; font-weight: bold; box-shadow: 0 10px 0 #ddd; }
+        .btn-ans { width: 100%; padding: 18px; margin: 8px 0; font-size: 1.1rem; border-radius: 12px; border: none; cursor: pointer; font-weight: bold; color: white; transition: 0.2s; }
+        .btn-a { background: var(--red); } .btn-b { background: var(--blue); }
+        
+        .waiting-room { font-size: 1.5rem; color: var(--accent); animation: pulse 1.5s infinite; }
+        @keyframes pulse { 0% { opacity: 0.5; } 50% { opacity: 1; } 100% { opacity: 0.5; } }
+    </style>
+</head>
+<body>
+
+    <div id="join-screen" class="player-wrap">
+        <h1 style="font-size: 3rem;">LINKER ARENA</h1>
+        <p>Enter your team name to find an opponent!</p>
+        <input type="text" id="player-name" placeholder="Team Name..." style="padding:15px; width:80%; border-radius:10px; border:none; font-size:1rem;"><br><br>
+        <button class="btn-ans" style="background:var(--primary)" onclick="findMatch()">FIND MATCH ⚔️</button>
+        <button onclick="showAdmin()" style="background:none; color:#666; border:none; margin-top:30px; cursor:pointer;">Teacher Dashboard</button>
+    </div>
+
+    <div id="waiting-screen" class="hidden player-wrap">
+        <div class="waiting-room">MATCHMAKING...</div>
+        <p>Searching for a worthy opponent...</p>
+    </div>
+
+    <div id="admin-screen" class="hidden">
+        <div class="dashboard-container">
+            <div>
+                <h2 style="color:var(--accent)">LIVE MATCHES TRACKER</h2>
+                <div id="matches-grid" class="matches-grid"></div>
+            </div>
+            <div class="leaderboard">
+                <h3>🏆 TOP TEAMS</h3>
+                <div id="rank-list"></div>
+            </div>
+        </div>
+    </div>
+
+    <div id="battle-screen" class="hidden player-wrap">
+        <div id="opp-info" style="margin-bottom:15px; font-style:italic; color:#aaa;"></div>
+        <div id="q-text" class="q-card"></div>
+        <div id="ans-buttons"></div>
+    </div>
+
+    <script>
+        // --- 1. CẤU HÌNH FIREBASE ---
+        const firebaseConfig = { 
+  apiKey : "AIzaSyB4iP017_OnJqTYmvPgrj0EY-r5ydSheCU" , 
+  authDomain : "practice-495a3.firebaseapp.com" , 
+  databaseURL : "https://practice-495a3-default-rtdb.asia-southeast1.firebaseddatabase.app" , 
+  projectId : "practice-495a3" , 
+  storageBucket : "practice-495a3.firebasestorage.app" , 
+  messagingSenderId : "640634307392" , 
+  appId : "1:640634307392:web:c01dff47b2c46d7b93b0a5" , 
+  measurementId : "G-N935CXPJ4C" 
+};
+        firebase.initializeApp(firebaseConfig);
+        const db = firebase.database();
+
+        let myName = "";
+        let myMatchId = "";
+        let mySide = ""; // 'a' or 'b'
+        let currentQ = null;
+
+        const questions = [
+            { q: "I study hard, ___ I pass the exam.", a: "so", b: "but", correct: "a" },
+            { q: "He's rich, ___ he is unhappy.", a: "in addition", b: "however", correct: "b" },
+            { q: "We stayed home ___ it rained.", a: "because", b: "result", correct: "a" },
+            { q: "She's a teacher. ___, she's a writer.", a: "In addition", b: "As a result", correct: "a" }
+        ];
+
+        // --- 2. LOGIC GHÉP CẶP NGẪU NHIÊN ---
+        function findMatch() {
+            myName = document.getElementById('player-name').value.trim();
+            if(!myName) return alert("Please enter a name!");
+            
+            document.getElementById('join-screen').classList.add('hidden');
+            document.getElementById('waiting-screen').classList.remove('hidden');
+
+            const queueRef = db.ref('queue');
+            queueRef.transaction((queue) => {
+                if (!queue) return { [myName]: true };
+                
+                const players = Object.keys(queue);
+                if (players.length > 0) {
+                    const opponent = players[0];
+                    myMatchId = `match_${opponent}_vs_${myName}`;
+                    mySide = 'b';
+                    
+                    // Tạo trận đấu mới
+                    db.ref('matches/' + myMatchId).set({
+                        p1: opponent, p2: myName, momentum: 50, status: 'active'
+                    });
+                    
+                    // Xóa đối thủ khỏi hàng chờ
+                    return null; 
+                }
+                return { [myName]: true };
+            });
+
+            // Lắng nghe xem mình đã có trận chưa
+            db.ref('matches').on('value', snap => {
+                snap.forEach(child => {
+                    const m = child.val();
+                    if(m.p1 === myName || m.p2 === myName) {
+                        myMatchId = child.key;
+                        mySide = (m.p1 === myName) ? 'a' : 'b';
+                        startBattle(m);
+                    }
+                });
+            });
+        }
+
+        // --- 3. LOGIC CHIẾN ĐẤU ---
+        function startBattle(matchData) {
+            document.getElementById('waiting-screen').classList.add('hidden');
+            document.getElementById('battle-screen').classList.remove('hidden');
+            const oppName = (mySide === 'a') ? matchData.p2 : matchData.p1;
+            document.getElementById('opp-info').innerText = `You vs ${oppName}`;
+            
+            // Khởi tạo điểm
+            db.ref('players/' + myName).set({ name: myName, score: 0 });
+            loadQuestion();
+        }
+
+        function loadQuestion() {
+            currentQ = questions[Math.floor(Math.random() * questions.length)];
+            document.getElementById('q-text').innerText = currentQ.q;
+            document.getElementById('ans-buttons').innerHTML = `
+                <button class="btn-ans btn-a" onclick="answer('a')">A. ${currentQ.a}</button>
+                <button class="btn-ans btn-b" onclick="answer('b')">B. ${currentQ.b}</button>
+            `;
+        }
+
+        window.answer = (choice) => {
+            if(choice === currentQ.correct) {
+                db.ref('players/' + myName + '/score').transaction(s => (s || 0) + 10);
+                // Đẩy thanh bar: Nếu mình là p1 (side a) thì đẩy về phía mình (-), p2 (+)
+                db.ref('matches/' + myMatchId + '/momentum').transaction(m => {
+                    let move = (mySide === 'a') ? -7 : 7;
+                    return Math.max(0, Math.min(100, (m || 50) + move));
+                });
+            }
+            loadQuestion();
+        };
+
+        // --- 4. DASHBOARD GIÁO VIÊN ---
+        function showAdmin() {
+            document.getElementById('join-screen').classList.add('hidden');
+            document.getElementById('admin-screen').classList.remove('hidden');
+
+            db.ref('matches').on('value', snap => {
+                const grid = document.getElementById('matches-grid');
+                grid.innerHTML = '';
+                snap.forEach(child => {
+                    const m = child.val();
+                    grid.innerHTML += `
+                        <div class="match-card">
+                            <div style="display:flex; justify-content:space-between; font-weight:bold;">
+                                <span style="color:var(--red)">${m.p1}</span>
+                                <span style="color:var(--blue)">${m.p2}</span>
+                            </div>
+                            <div class="bar-bg">
+                                <div class="center-line"></div>
+                                <div class="bar-momentum" style="left: ${m.momentum - 25}%"></div>
+                            </div>
+                        </div>`;
+                });
+            });
+
+            db.ref('players').orderByChild('score').on('value', snap => {
+                const list = document.getElementById('rank-list');
+                list.innerHTML = '';
+                let players = [];
+                snap.forEach(c => players.push(c.val()));
+                players.reverse().forEach((p, i) => {
+                    list.innerHTML += `<div class="rank-item"><span>#${i+1} ${p.name}</span><span>${p.score}</span></div>`;
+                });
+            });
+        }
+    </script>
+</body>
+</html>
